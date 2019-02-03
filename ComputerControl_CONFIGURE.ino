@@ -1,11 +1,13 @@
-#include <DHTesp.h>  //https://github.com/beegee-tokyo/DHTesp
+#include <DHT.h>  //https://github.com/adafruit/DHT-sensor-library
 #include <SimpleTimer.h>  //https://github.com/jfturcot/SimpleTimer
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>  //https://github.com/knolleary/pubsubclient
 #include <ESP8266mDNS.h> 
 #include <WiFiUdp.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>
 #include <ArduinoOTA.h>  //https://github.com/esp8266/Arduino/tree/master/libraries/ArduinoOTA
-
+WiFiServer server(80);
 //USER CONFIGURED SECTION START//
 const char* ssid = "YOUR_WIRELESS_SSID";
 const char* password = "YOUR_WIRELESS_PASSWORD";
@@ -14,12 +16,20 @@ const int mqtt_port = 1883;
 const char *mqtt_user = "YOUR_MQTT_USERNAME";
 const char *mqtt_pass = "YOUR_MQTT_PASSWORD";
 const char *mqtt_client_name = "PCMCU"; // Client connections can't have the same connection name
-//USER CONFIGURED SECTION END//
 
+
+#define humidity_topic "PC/humidity"
+#define temperature_topic "PC/temperature"
+
+#define DHTTYPE DHT22
+#define DHTPIN  4
+const int TEMPERATURE_INTERVAL = 300;
+//USER CONFIGURED SECTION END//
+WiFiManager wifiManager;
 WiFiClient espClient;
 PubSubClient client(espClient);
 SimpleTimer timer;
-DHTesp dht;
+
 
 // Pins
 
@@ -31,10 +41,12 @@ const int powerSensePin = 16;  //marked as D0 on the board
 // Variables
 String currentStatus = "OFF";
 String oldStatus = "OFF";
-char temperature[50];
-char humidity[50];
 bool boot = true;
 bool connectWifi();
+long lastMsg = 0;
+float temp = 0.0;
+float hum = 0.0;
+float diff = 0.1;
 
 //Functions
 void setup_wifi() 
@@ -53,7 +65,7 @@ void setup_wifi()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
-
+DHT dht(DHTPIN, DHTTYPE, 11); // 11 works fine for ESP8266
 void reconnect() 
 {
   int retries = 0;
@@ -124,6 +136,10 @@ void callback(char* topic, byte* payload, unsigned int length)
   }
 }
 
+bool checkBound(float newValue, float prevValue, float maxDiff) {
+  return !isnan(newValue) &&
+         (newValue < prevValue - maxDiff || newValue > prevValue + maxDiff);
+}
 void powerSense()
 {
   if (pulseIn(powerSensePin, HIGH, 300000) > 100)
@@ -178,25 +194,13 @@ void checkIn()
 }
 
 
-void getTemp() 
-{
-  float temp = dht.toFahrenheit(dht.getTemperature());
-  String temp_str = String(temp);
-  temp_str.toCharArray(temperature, temp_str.length() + 1);
-  client.publish("guestRoom/temperature", temperature);  
-  
-  float humid = dht.getHumidity();
-  String temp_str2 = String(humid);
-  temp_str2.toCharArray(humidity, temp_str2.length() + 1);
-  client.publish("guestRoom/humidity", humidity); 
-}
 
 
 void setup() 
 {
   Serial.begin(115200);
   // Add the DHT11 sensor to pin D6 (GPIO12)
-  dht.setup(12, DHTesp::DHT11);
+   dht.begin();
   // GPIO Pin Setup
   pinMode(powerSensePin, INPUT_PULLDOWN_16);
   pinMode(powerButtonPin, OUTPUT);
@@ -205,7 +209,6 @@ void setup()
   client.setCallback(callback);
   ArduinoOTA.setHostname("PCMCU");
   ArduinoOTA.begin(); 
-  timer.setInterval(30000, getTemp);
   timer.setInterval(3000, powerSense);
   timer.setInterval(60000, powerSenseCheckIn);
   timer.setInterval(120000, checkIn);   
